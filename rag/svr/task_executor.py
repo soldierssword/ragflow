@@ -21,7 +21,7 @@ import sys
 
 from api.utils.log_utils import initRootLogger, get_project_base_directory
 from graphrag.general.index import run_graphrag
-from graphrag.utils import get_llm_cache, set_llm_cache, get_tags_from_cache, set_tags_to_cache
+from graphrag.utils import get_llm_cache, set_llm_cache, get_tags_from_cache, set_tags_to_cache, TaskContext
 from rag.prompts import keyword_extraction, question_proposal, content_tagging
 
 import logging
@@ -33,7 +33,6 @@ import copy
 import re
 from functools import partial
 from io import BytesIO
-from multiprocessing.context import TimeoutError
 from timeit import default_timer as timer
 import tracemalloc
 import signal
@@ -477,112 +476,115 @@ async def do_handle_task(task):
     task_document_name = task["name"]
     task_parser_config = task["parser_config"]
     task_start_ts = timer()
-
-    # prepare the progress callback function
-    progress_callback = partial(set_progress, task_id, task_from_page, task_to_page)
-
-    # FIXME: workaround, Infinity doesn't support table parsing method, this check is to notify user
-    lower_case_doc_engine = settings.DOC_ENGINE.lower()
-    if lower_case_doc_engine == 'infinity' and task['parser_id'].lower() == 'table':
-        error_message = "Table parsing method is not supported by Infinity, please use other parsing methods or use Elasticsearch as the document engine."
-        progress_callback(-1, msg=error_message)
-        raise Exception(error_message)
-
-    task_canceled = TaskService.do_cancel(task_id)
-    if task_canceled:
-        progress_callback(-1, msg="Task has been canceled.")
-        return
-
-    try:
-        # bind embedding model
-        embedding_model = LLMBundle(task_tenant_id, LLMType.EMBEDDING, llm_name=task_embedding_id, lang=task_language)
-        vts, _ = embedding_model.encode(["ok"])
-        vector_size = len(vts[0])
-    except Exception as e:
-        error_message = f'Fail to bind embedding model: {str(e)}'
-        progress_callback(-1, msg=error_message)
-        logging.exception(error_message)
-        raise
-
-    init_kb(task, vector_size)
-
-    # Either using RAPTOR or Standard chunking methods
-    if task.get("task_type", "") == "raptor":
-        # bind LLM for raptor
-        chat_model = LLMBundle(task_tenant_id, LLMType.CHAT, llm_name=task_llm_id, lang=task_language)
-        # run RAPTOR
-        chunks, token_count = await run_raptor(task, chat_model, embedding_model, vector_size, progress_callback)
-    # Either using graphrag or Standard chunking methods
-    elif task.get("task_type", "") == "graphrag":
-        graphrag_conf = task_parser_config.get("graphrag", {})
-        if not graphrag_conf.get("use_graphrag", False):
-            return
-        start_ts = timer()
-        chat_model = LLMBundle(task_tenant_id, LLMType.CHAT, llm_name=task_llm_id, lang=task_language)
-        with_resolution = graphrag_conf.get("resolution", False)
-        with_community = graphrag_conf.get("community", False)
-        await run_graphrag(task, task_language, with_resolution, with_community, chat_model, embedding_model, progress_callback)
-        progress_callback(prog=1.0, msg="Knowledge Graph done ({:.2f}s)".format(timer() - start_ts))
-        return
-    else:
-        # Standard chunking methods
-        start_ts = timer()
-        chunks = await build_chunks(task, progress_callback)
-        logging.info("Build document {}: {:.2f}s".format(task_document_name, timer() - start_ts))
-        if chunks is None:
-            return
-        if not chunks:
-            progress_callback(1., msg=f"No chunk built from {task_document_name}")
-            return
-        # TODO: exception handler
-        ## set_progress(task["did"], -1, "ERROR: ")
-        progress_callback(msg="Generate {} chunks".format(len(chunks)))
-        start_ts = timer()
-        try:
-            token_count, vector_size = await embedding(chunks, embedding_model, task_parser_config, progress_callback)
-        except Exception as e:
-            error_message = "Generate embedding error:{}".format(str(e))
-            progress_callback(-1, error_message)
-            logging.exception(error_message)
-            token_count = 0
-            raise
-        progress_message = "Embedding chunks ({:.2f}s)".format(timer() - start_ts)
-        logging.info(progress_message)
-        progress_callback(msg=progress_message)
-
-    chunk_count = len(set([chunk["id"] for chunk in chunks]))
-    start_ts = timer()
-    doc_store_result = ""
-    es_bulk_size = 4
-    for b in range(0, len(chunks), es_bulk_size):
-        doc_store_result = await trio.to_thread.run_sync(lambda: settings.docStoreConn.insert(chunks[b:b + es_bulk_size], search.index_name(task_tenant_id), task_dataset_id))
-        if b % 128 == 0:
-            progress_callback(prog=0.8 + 0.1 * (b + 1) / len(chunks), msg="")
-        if doc_store_result:
-            error_message = f"Insert chunk error: {doc_store_result}, please check log file and Elasticsearch/Infinity status!"
+    
+    # u8bbeu7f6eu5f53u524du4efbu52a1IDu5230u4efbu52a1u4e0au4e0bu6587
+    with TaskContext.task_context(task_id):
+        # prepare the progress callback function
+        progress_callback = partial(set_progress, task_id, task_from_page, task_to_page)
+        
+        # FIXME: workaround, Infinity doesn't support table parsing method, this check is to notify user
+        lower_case_doc_engine = settings.DOC_ENGINE.lower()
+        if lower_case_doc_engine == 'infinity' and task['parser_id'].lower() == 'table':
+            error_message = "Table parsing method is not supported by Infinity, please use other parsing methods or use Elasticsearch as the document engine."
             progress_callback(-1, msg=error_message)
             raise Exception(error_message)
-        chunk_ids = [chunk["id"] for chunk in chunks[:b + es_bulk_size]]
-        chunk_ids_str = " ".join(chunk_ids)
-        try:
-            TaskService.update_chunk_ids(task["id"], chunk_ids_str)
-        except DoesNotExist:
-            logging.warning(f"do_handle_task update_chunk_ids failed since task {task['id']} is unknown.")
-            doc_store_result = await trio.to_thread.run_sync(lambda: settings.docStoreConn.delete({"id": chunk_ids}, search.index_name(task_tenant_id), task_dataset_id))
+        
+        task_canceled = TaskService.do_cancel(task_id)
+        if task_canceled:
+            progress_callback(-1, msg="Task has been canceled.")
             return
-    logging.info("Indexing doc({}), page({}-{}), chunks({}), elapsed: {:.2f}".format(task_document_name, task_from_page,
-                                                                                     task_to_page, len(chunks),
-                                                                                     timer() - start_ts))
-
-    DocumentService.increment_chunk_num(task_doc_id, task_dataset_id, token_count, chunk_count, 0)
-
-    time_cost = timer() - start_ts
-    task_time_cost = timer() - task_start_ts
-    progress_callback(prog=1.0, msg="Indexing done ({:.2f}s). Task done ({:.2f}s)".format(time_cost, task_time_cost))
-    logging.info(
-        "Chunk doc({}), page({}-{}), chunks({}), token({}), elapsed:{:.2f}".format(task_document_name, task_from_page,
-                                                                                   task_to_page, len(chunks),
-                                                                                   token_count, task_time_cost))
+        
+        try:
+            # bind embedding model
+            embedding_model = LLMBundle(task_tenant_id, LLMType.EMBEDDING, llm_name=task_embedding_id, lang=task_language)
+            vts, _ = embedding_model.encode(["ok"])
+            vector_size = len(vts[0])
+        except Exception as e:
+            error_message = f'Fail to bind embedding model: {str(e)}'
+            progress_callback(-1, msg=error_message)
+            logging.exception(error_message)
+            raise
+        
+        init_kb(task, vector_size)
+        
+        # Either using RAPTOR or Standard chunking methods
+        if task.get("task_type", "") == "raptor":
+            # bind LLM for raptor
+            chat_model = LLMBundle(task_tenant_id, LLMType.CHAT, llm_name=task_llm_id, lang=task_language)
+            # run RAPTOR
+            chunks, token_count = await run_raptor(task, chat_model, embedding_model, vector_size, progress_callback)
+        # Either using graphrag or Standard chunking methods
+        elif task.get("task_type", "") == "graphrag":
+            graphrag_conf = task_parser_config.get("graphrag", {})
+            if not graphrag_conf.get("use_graphrag", False):
+                return
+            start_ts = timer()
+            chat_model = LLMBundle(task_tenant_id, LLMType.CHAT, llm_name=task_llm_id, lang=task_language)
+            
+            # run graphrag
+            try:
+                await run_graphrag(task, chat_model, embedding_model, vector_size, progress_callback)
+            except TaskCanceledException:
+                logging.info(f"Task {task_id} has been canceled.")
+                return
+            except Exception as e:
+                logging.exception(f"run_graphrag got exception: {e}")
+                progress_callback(-1, msg=f"run_graphrag got exception: {str(e)}")
+                return
+            
+            logging.info(f"run_graphrag({task_id}) done in {timer() - start_ts:.2f}s")
+        else:
+            # Standard chunking methods
+            try:
+                chunks = await build_chunks(task, progress_callback)
+            except TaskCanceledException:
+                logging.info(f"Task {task_id} has been canceled.")
+                return
+            except Exception as e:
+                logging.exception(f"build_chunks got exception: {e}")
+                return
+            
+            if not chunks:
+                logging.warning(f"No chunks for {task_document_name}")
+                progress_callback(100, msg="No chunks found.")
+                return
+            
+            logging.info(f"build_chunks({task_id}) done in {timer() - task_start_ts:.2f}s")
+            
+            # embedding
+            try:
+                await embedding(chunks, embedding_model, task_parser_config, progress_callback)
+            except TaskCanceledException:
+                logging.info(f"Task {task_id} has been canceled.")
+                return
+            except Exception as e:
+                logging.exception(f"embedding got exception: {e}")
+                progress_callback(-1, msg=f"embedding got exception: {str(e)}")
+                return
+            
+            logging.info(f"embedding({task_id}) done in {timer() - task_start_ts:.2f}s")
+            
+            # save to doc store
+            try:
+                await trio.to_thread.run_sync(lambda: settings.docStoreConn.insert(chunks, search.index_name(task_tenant_id), task_dataset_id))
+            except Exception as e:
+                logging.exception(f"docStoreConn.insert got exception: {e}")
+                progress_callback(-1, msg=f"docStoreConn.insert got exception: {str(e)}")
+                return
+            
+            logging.info(f"docStoreConn.insert({task_id}) done in {timer() - task_start_ts:.2f}s")
+            
+            # update document status
+            try:
+                doc = {"progress": 100, "run": TaskStatus.DONE.value, "chunk_count": len(chunks)}
+                DocumentService.update(task_doc_id, doc)
+            except Exception as e:
+                logging.exception(f"DocumentService.update got exception: {e}")
+                progress_callback(-1, msg=f"DocumentService.update got exception: {str(e)}")
+                return
+            
+            progress_callback(100, msg="Done.")
+            logging.info(f"Task {task_id} done in {timer() - task_start_ts:.2f}s")
 
 
 async def handle_task():
@@ -609,7 +611,6 @@ async def handle_task():
         except Exception:
             pass
         logging.exception(f"handle_task got exception for task {json.dumps(task)}")
-    redis_msg.ack()
 
 
 async def report_status():

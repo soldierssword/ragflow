@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import time
+import threading
 from collections import defaultdict
 from copy import deepcopy
 from functools import wraps
@@ -22,16 +23,56 @@ import trio
 import networkx as nx
 import numpy as np
 import xxhash
+import openai
+import requests
 from networkx.readwrite import json_graph
 
 from api import settings
 from rag.nlp import search, rag_tokenizer
 from rag.utils.doc_store_conn import OrderByExpr
 from rag.utils.redis_conn import REDIS_CONN
+from api.db.services.task_service import TaskService
+from rag.svr.task_executor import TaskCanceledException
 
 ErrorHandlerFn = Callable[[BaseException | None, str | None, dict | None], None]
 
 chat_limiter = trio.CapacityLimiter(int(os.environ.get('MAX_CONCURRENT_CHATS', 10)))
+
+# 创建一个线程本地存储，用于存储当前任务ID
+_task_context = threading.local()
+
+class TaskContext:
+    """任务上下文管理器，用于设置和获取当前线程的任务ID"""
+    
+    @staticmethod
+    def set_current_task_id(task_id):
+        """设置当前线程的任务ID"""
+        _task_context.task_id = task_id
+    
+    @staticmethod
+    def get_current_task_id():
+        """获取当前线程的任务ID"""
+        return getattr(_task_context, 'task_id', None)
+    
+    @staticmethod
+    def clear_current_task_id():
+        """清除当前线程的任务ID"""
+        if hasattr(_task_context, 'task_id'):
+            del _task_context.task_id
+    
+    @classmethod
+    def task_context(cls, task_id):
+        """创建一个上下文管理器，用于设置和清除当前任务ID"""
+        class ContextManager:
+            def __enter__(self):
+                cls.set_current_task_id(task_id)
+                return task_id
+            
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                cls.clear_current_task_id()
+                return False
+        
+        return ContextManager()
 
 def perform_variable_replacements(
     input: str, history: list[dict] | None = None, variables: dict | None = None
@@ -400,9 +441,26 @@ def retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_lim
             rate_limit_retries_count = 0
             delay = initial_delay
             
+            # 获取task_id（如果可用）
+            task_id = TaskContext.get_current_task_id()
+            
             while True:
+                # 检查任务是否被取消
+                if task_id:
+                    try:
+                        if TaskService.do_cancel(task_id):
+                            logging.info(f"Task {task_id} has been canceled during retry, stopping retry process")
+                            raise TaskCanceledException(f"Task {task_id} has been canceled during retry")
+                    except Exception as e:
+                        # 如果检查取消状态时出错，记录日志但不中断重试
+                        logging.warning(f"Failed to check task cancel status: {e}")
+                
                 try:
                     return func(*args, **kwargs)
+                except TaskCanceledException as e:
+                    # 直接向上传递任务取消异常，不进行重试
+                    logging.info(f"任务已取消，停止重试: {e}")
+                    raise
                 except (openai.RateLimitError, openai.APIError, requests.exceptions.RequestException) as e:
                     error_str = str(e).lower()
                     # 检查是否是速率限制错误
@@ -463,7 +521,6 @@ async def get_graph_doc_ids(tenant_id, kb_id) -> list[str]:
         doc_ids = res.field[id]["source_id"]
     return doc_ids
 
-
 async def get_graph(tenant_id, kb_id):
     conds = {
         "fields": ["content_with_weight", "source_id"],
@@ -483,7 +540,6 @@ async def get_graph(tenant_id, kb_id):
     result = await rebuild_graph(tenant_id, kb_id)
     return result
 
-
 async def set_graph(tenant_id, kb_id, graph, docids):
     chunk = {
         "content_with_weight": json.dumps(nx.node_link_data(graph, edges="edges"), ensure_ascii=False,
@@ -500,7 +556,6 @@ async def set_graph(tenant_id, kb_id, graph, docids):
                                      search.index_name(tenant_id), kb_id))
     else:
         await trio.to_thread.run_sync(lambda: settings.docStoreConn.insert([{"id": chunk_id(chunk), **chunk}], search.index_name(tenant_id), kb_id))
-
 
 def is_continuous_subsequence(subseq, seq):
     def find_all_indexes(tup, value):
@@ -522,7 +577,6 @@ def is_continuous_subsequence(subseq, seq):
                 return True
     return False
 
-
 def merge_tuples(list1, list2):
     result = []
     for tup in list1:
@@ -542,7 +596,6 @@ def merge_tuples(list1, list2):
             if not already_match_flag:
                 result.append(tup)
     return result
-
 
 async def update_nodes_pagerank_nhop_neighbour(tenant_id, kb_id, graph, n_hop):
     def n_neighbor(id):
@@ -604,7 +657,6 @@ async def update_nodes_pagerank_nhop_neighbour(tenant_id, kb_id, graph, n_hop):
     else:
         await trio.to_thread.run_sync(lambda: settings.docStoreConn.insert([{"id": chunk_id(chunk), **chunk}], search.index_name(tenant_id), kb_id))
 
-
 async def get_entity_type2sampels(idxnms, kb_ids: list):
     es_res = await trio.to_thread.run_sync(lambda: settings.retrievaler.search({"knowledge_graph_kwd": "ty2ents", "kb_id": kb_ids,
                                        "size": 10000,
@@ -625,7 +677,6 @@ async def get_entity_type2sampels(idxnms, kb_ids: list):
             res[ty].extend(ents)
     return res
 
-
 def flat_uniq_list(arr, key):
     res = []
     for a in arr:
@@ -635,7 +686,6 @@ def flat_uniq_list(arr, key):
         else:
             res.append(a)
     return list(set(res))
-
 
 async def rebuild_graph(tenant_id, kb_id):
     graph = nx.Graph()
