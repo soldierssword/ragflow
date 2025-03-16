@@ -13,6 +13,7 @@ import re
 import time
 from collections import defaultdict
 from copy import deepcopy
+from functools import wraps
 from hashlib import md5
 from typing import Any, Callable
 import os
@@ -378,6 +379,60 @@ def set_relation(tenant_id, kb_id, embd_mdl, from_ent_name, to_ent_name, meta):
         if ebd is not None:
             chunk["q_%d_vec" % len(ebd)] = ebd
         settings.docStoreConn.insert([{"id": chunk_id(chunk), **chunk}], search.index_name(tenant_id), kb_id)
+
+def retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf')):
+    """
+    装饰器函数，用于处理大模型请求的重试逻辑
+    
+    参数:
+        max_retries (int): 最大重试次数（对于非速率限制错误）
+        initial_delay (float): 初始延迟时间（秒）
+        backoff_factor (float): 退避因子，每次重试后延迟时间会乘以这个因子
+        rate_limit_retries (float): 速率限制错误的最大重试次数，默认为无限
+    
+    返回:
+        装饰器函数
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            retries = 0
+            rate_limit_retries_count = 0
+            delay = initial_delay
+            
+            while True:
+                try:
+                    return func(*args, **kwargs)
+                except (openai.RateLimitError, openai.APIError, requests.exceptions.RequestException) as e:
+                    error_str = str(e).lower()
+                    # 检查是否是速率限制错误
+                    is_rate_limit = any(keyword in error_str for keyword in 
+                                      ["rate limit", "ratelimit", "too many requests", "429", "too_many_requests"])
+                    
+                    if is_rate_limit:
+                        rate_limit_retries_count += 1
+                        if rate_limit_retries_count > rate_limit_retries:
+                            logging.warning(f"达到速率限制重试上限({rate_limit_retries})，放弃重试")
+                            raise
+                        
+                        retry_delay = delay * (1 + 0.5 * (rate_limit_retries_count - 1))
+                        logging.warning(f"遇到速率限制错误，第{rate_limit_retries_count}次重试，等待{retry_delay}秒: {e}")
+                        time.sleep(retry_delay)
+                    else:
+                        retries += 1
+                        if retries > max_retries:
+                            logging.warning(f"达到最大重试次数({max_retries})，放弃重试")
+                            raise
+                        
+                        logging.warning(f"请求失败，第{retries}次重试，等待{delay}秒: {e}")
+                        time.sleep(delay)
+                        delay *= backoff_factor
+                except Exception as e:
+                    logging.error(f"发生未预期的错误: {e}")
+                    raise
+        
+        return wrapper
+    return decorator
 
 async def does_graph_contains(tenant_id, kb_id, doc_id):
     # Get doc_ids of graph

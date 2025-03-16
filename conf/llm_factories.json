@@ -1015,7 +1015,7 @@
             "status": "1",
             "llm": [
                 {
-                    "llm_name": "gemini-2.0-flash-001",
+                    "llm_name": "gemini-2.0-flash",
                     "tags": "LLM,CHAT,1024K",
                     "max_tokens": 1048576,
                     "model_type": "chat"
@@ -1837,8 +1837,6 @@
                     "max_tokens": 512,
                     "model_type": "embedding"
                 },
-
-
                 {
                     "llm_name": "adept/fuyu-8b",
                     "tags": "IMAGE2TEXT,1K",

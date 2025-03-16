@@ -30,6 +30,7 @@ import asyncio
 from api import settings
 from api.utils.file_utils import get_home_cache_dir
 from rag.utils import num_tokens_from_string, truncate
+from graphrag.utils import retry_llm_request
 import google.generativeai as genai
 import json
 
@@ -93,6 +94,7 @@ class DefaultEmbedding(Base):
         self._model = DefaultEmbedding._model
         self._model_name = DefaultEmbedding._model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
         batch_size = 16
         texts = [truncate(t, 2048) for t in texts]
@@ -104,6 +106,7 @@ class DefaultEmbedding(Base):
             ress.extend(self._model.encode(texts[i:i + batch_size]).tolist())
         return np.array(ress), token_count
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text: str):
         token_count = num_tokens_from_string(text)
         return self._model.encode_queries([text]).tolist()[0], token_count
@@ -117,6 +120,7 @@ class OpenAIEmbed(Base):
         self.client = OpenAI(api_key=key, base_url=base_url)
         self.model_name = model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
         # OpenAI requires batch size <=16
         batch_size = 16
@@ -130,6 +134,7 @@ class OpenAIEmbed(Base):
             total_tokens += self.total_token_count(res)
         return np.array(ress), total_tokens
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text):
         res = self.client.embeddings.create(input=[truncate(text, 8191)],
                                             model=self.model_name)
@@ -145,6 +150,7 @@ class LocalAIEmbed(Base):
         self.client = OpenAI(api_key="empty", base_url=base_url)
         self.model_name = model_name.split("___")[0]
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
         batch_size = 16
         ress = []
@@ -154,6 +160,7 @@ class LocalAIEmbed(Base):
         # local embedding for LmStudio donot count tokens
         return np.array(ress), 1024
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text):
         embds, cnt = self.encode([text])
         return np.array(embds[0]), cnt
@@ -182,6 +189,7 @@ class QWenEmbed(Base):
         self.key = key
         self.model_name = model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
         import dashscope
         batch_size = 4
@@ -196,6 +204,7 @@ class QWenEmbed(Base):
                     api_key=self.key,
                     text_type="document"
                 )
+
                 embds = [[] for _ in range(len(resp["output"]["embeddings"]))]
                 for e in resp["output"]["embeddings"]:
                     embds[e["text_index"]] = e["embedding"]
@@ -206,6 +215,7 @@ class QWenEmbed(Base):
             raise Exception("Account abnormal. Please ensure it's on good standing to use QWen's "+self.model_name)
         return np.array([]), 0
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text):
         try:
             resp = dashscope.TextEmbedding.call(
@@ -226,6 +236,7 @@ class ZhipuEmbed(Base):
         self.client = ZhipuAI(api_key=key)
         self.model_name = model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
         arr = []
         tks_num = 0
@@ -244,6 +255,7 @@ class ZhipuEmbed(Base):
             tks_num += self.total_token_count(res)
         return np.array(arr), tks_num
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text):
         res = self.client.embeddings.create(input=text,
                                             model=self.model_name)
@@ -255,6 +267,7 @@ class OllamaEmbed(Base):
         self.client = Client(host=kwargs["base_url"])
         self.model_name = model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
         arr = []
         tks_num = 0
@@ -265,6 +278,7 @@ class OllamaEmbed(Base):
             tks_num += 128
         return np.array(arr), tks_num
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text):
         res = self.client.embeddings(prompt=text,
                                      model=self.model_name)
@@ -297,6 +311,7 @@ class FastEmbed(DefaultEmbedding):
         self._model = DefaultEmbedding._model
         self._model_name = model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
         # Using the internal tokenizer to encode the texts and get the total
         # number of tokens
@@ -307,6 +322,7 @@ class FastEmbed(DefaultEmbedding):
 
         return np.array(embeddings), total_tokens
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text: str):
         # Using the internal tokenizer to encode the texts and get the total
         # number of tokens
@@ -323,6 +339,7 @@ class XinferenceEmbed(Base):
         self.client = OpenAI(api_key=key, base_url=base_url)
         self.model_name = model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
         batch_size = 16
         ress = []
@@ -333,6 +350,7 @@ class XinferenceEmbed(Base):
             total_tokens += self.total_token_count(res)
         return np.array(ress), total_tokens
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text):
         res = self.client.embeddings.create(input=[text],
                                             model=self.model_name)
@@ -355,6 +373,7 @@ class YoudaoEmbed(Base):
                     model_name_or_path=model_name.replace(
                         "maidalun1020", "InfiniFlow"))
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
         batch_size = 10
         res = []
@@ -366,6 +385,7 @@ class YoudaoEmbed(Base):
             res.extend(embds)
         return np.array(res), token_count
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text):
         embds = YoudaoEmbed._client.encode([text])
         return np.array(embds[0]), num_tokens_from_string(text)
@@ -382,6 +402,7 @@ class JinaEmbed(Base):
         }
         self.model_name = model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
         texts = [truncate(t, 8196) for t in texts]
         batch_size = 16
@@ -398,6 +419,7 @@ class JinaEmbed(Base):
             token_count += self.total_token_count(res)
         return np.array(ress), token_count
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text):
         embds, cnt = self.encode([text])
         return np.array(embds[0]), cnt
@@ -437,9 +459,7 @@ class InfinityEmbed(Base):
         embeddings, usage = asyncio.run(self._embed(texts, model_name))
         return np.array(embeddings), usage
 
-    def encode_queries(self, text: str) -> tuple[np.ndarray, int]:
-        # Using the internal tokenizer to encode the texts and get the total
-        # number of tokens
+    def encode_queries(self, text):
         return self.encode([text])
 
 
@@ -450,22 +470,79 @@ class MistralEmbed(Base):
         self.client = MistralClient(api_key=key)
         self.model_name = model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
-        texts = [truncate(t, 8196) for t in texts]
         batch_size = 16
+        texts = [truncate(t, 8191) for t in texts]
         ress = []
-        token_count = 0
+        total_tokens = 0
         for i in range(0, len(texts), batch_size):
-            res = self.client.embeddings(input=texts[i:i + batch_size],
-                                        model=self.model_name)
-            ress.extend([d.embedding for d in res.data])
-            token_count += self.total_token_count(res)
-        return np.array(ress), token_count
+            try:
+                resp = self.client.embeddings(
+                    model=self.model_name,
+                    input=texts[i:i + batch_size],
+                )
+                for d in resp.data:
+                    ress.append(d.embedding)
+                total_tokens += resp.usage.total_tokens
+            except Exception as e:
+                raise Exception(f"Error: {str(e)}")
+        return np.array(ress), total_tokens
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text):
-        res = self.client.embeddings(input=[truncate(text, 8196)],
-                                            model=self.model_name)
-        return np.array(res.data[0].embedding), self.total_token_count(res)
+        try:
+            resp = self.client.embeddings(
+                model=self.model_name,
+                input=[truncate(text, 8191)],
+            )
+            return np.array(resp.data[0].embedding), resp.usage.total_tokens
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
+
+
+class GeminiEmbed(Base):
+    def __init__(self, key, model_name='models/text-embedding-004',
+                 **kwargs):
+        self.key = key
+        self.model_name = 'models/' + model_name
+
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
+    def encode(self, texts: list):
+        import google.generativeai as genai
+        genai.configure(api_key=self.key)
+        batch_size = 16
+        texts = [truncate(t, 2048) for t in texts]
+        ress = []
+        total_tokens = 0
+        for i in range(0, len(texts), batch_size):
+            try:
+                for text in texts[i:i + batch_size]:
+                    result = genai.embed_content(
+                        model=self.model_name,
+                        content=text,
+                        task_type="retrieval_document",
+                    )
+                    ress.append(result["embedding"])
+                    total_tokens += len(text.split())
+            except Exception as e:
+                raise Exception(f"Error: {str(e)}")
+        return np.array(ress), total_tokens
+
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
+    def encode_queries(self, text):
+        import google.generativeai as genai
+        genai.configure(api_key=self.key)
+        try:
+            text = truncate(text, 2048)
+            result = genai.embed_content(
+                model=self.model_name,
+                content=text,
+                task_type="retrieval_query",
+            )
+            return np.array(result["embedding"]), len(text.split())
+        except Exception as e:
+            raise Exception(f"Error: {str(e)}")
 
 
 class BedrockEmbed(Base):
@@ -484,6 +561,7 @@ class BedrockEmbed(Base):
             self.client = boto3.client(service_name='bedrock-runtime', region_name=self.bedrock_region,
                                     aws_access_key_id=self.bedrock_ak, aws_secret_access_key=self.bedrock_sk)
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
         texts = [truncate(t, 8196) for t in texts]
         embeddings = []
@@ -501,6 +579,7 @@ class BedrockEmbed(Base):
 
         return np.array(embeddings), token_count
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text):
         embeddings = []
         token_count = num_tokens_from_string(text)
@@ -514,38 +593,6 @@ class BedrockEmbed(Base):
         embeddings.extend(model_response["embedding"])
 
         return np.array(embeddings), token_count
-
-
-class GeminiEmbed(Base):
-    def __init__(self, key, model_name='models/text-embedding-004',
-                 **kwargs):
-        self.key = key
-        self.model_name = 'models/' + model_name
-        
-    def encode(self, texts: list):
-        texts = [truncate(t, 2048) for t in texts]
-        token_count = sum(num_tokens_from_string(text) for text in texts)
-        genai.configure(api_key=self.key)
-        batch_size = 16
-        ress = []
-        for i in range(0, len(texts), batch_size):
-            result = genai.embed_content(
-                model=self.model_name,
-                content=texts[i: i + batch_size],
-                task_type="retrieval_document",
-                title="Embedding of single string")
-            ress.extend(result['embedding'])
-        return np.array(ress),token_count
-    
-    def encode_queries(self, text):
-        genai.configure(api_key=self.key)
-        result = genai.embed_content(
-            model=self.model_name,
-            content=truncate(text,2048),
-            task_type="retrieval_document",
-            title="Embedding of single string")
-        token_count = num_tokens_from_string(text)
-        return np.array(result['embedding']), token_count
 
 
 class NvidiaEmbed(Base):
@@ -568,6 +615,7 @@ class NvidiaEmbed(Base):
         if model_name == "snowflake/arctic-embed-l":
             self.base_url = "https://ai.api.nvidia.com/v1/retrieval/snowflake/arctic-embed-l/embeddings"
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
         batch_size = 16
         ress = []
@@ -585,84 +633,10 @@ class NvidiaEmbed(Base):
             token_count += self.total_token_count(res)
         return np.array(ress), token_count
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text):
         embds, cnt = self.encode([text])
         return np.array(embds[0]), cnt
-
-
-class LmStudioEmbed(LocalAIEmbed):
-    def __init__(self, key, model_name, base_url):
-        if not base_url:
-            raise ValueError("Local llm url cannot be None")
-        if base_url.split("/")[-1] != "v1":
-            base_url = os.path.join(base_url, "v1")
-        self.client = OpenAI(api_key="lm-studio", base_url=base_url)
-        self.model_name = model_name
-
-
-class OpenAI_APIEmbed(OpenAIEmbed):
-    def __init__(self, key, model_name, base_url):
-        if not base_url:
-            raise ValueError("url cannot be None")
-        if base_url.split("/")[-1] != "v1":
-            base_url = os.path.join(base_url, "v1")
-        self.client = OpenAI(api_key=key, base_url=base_url)
-        self.model_name = model_name.split("___")[0]
-
-
-class CoHereEmbed(Base):
-    def __init__(self, key, model_name, base_url=None):
-        from cohere import Client
-
-        self.client = Client(api_key=key)
-        self.model_name = model_name
-
-    def encode(self, texts: list):
-        batch_size = 16
-        ress = []
-        token_count = 0
-        for i in range(0, len(texts), batch_size):
-            res = self.client.embed(
-                texts=texts[i : i + batch_size],
-                model=self.model_name,
-                input_type="search_document",
-                embedding_types=["float"],
-            )
-            ress.extend([d for d in res.embeddings.float])
-            token_count += res.meta.billed_units.input_tokens
-        return np.array(ress), token_count
-
-    def encode_queries(self, text):
-        res = self.client.embed(
-            texts=[text],
-            model=self.model_name,
-            input_type="search_query",
-            embedding_types=["float"],
-        )
-        return np.array(res.embeddings.float[0]), int(
-            res.meta.billed_units.input_tokens
-        )
-
-
-class TogetherAIEmbed(OpenAIEmbed):
-    def __init__(self, key, model_name, base_url="https://api.together.xyz/v1"):
-        if not base_url:
-            base_url = "https://api.together.xyz/v1"
-        super().__init__(key, model_name, base_url=base_url)
-
-
-class PerfXCloudEmbed(OpenAIEmbed):
-    def __init__(self, key, model_name, base_url="https://cloud.perfxlab.cn/v1"):
-        if not base_url:
-            base_url = "https://cloud.perfxlab.cn/v1"
-        super().__init__(key, model_name, base_url)
-
-
-class UpstageEmbed(OpenAIEmbed):
-    def __init__(self, key, model_name, base_url="https://api.upstage.ai/v1/solar"):
-        if not base_url:
-            base_url = "https://api.upstage.ai/v1/solar"
-        super().__init__(key, model_name, base_url)
 
 
 class SILICONFLOWEmbed(Base):
@@ -679,6 +653,7 @@ class SILICONFLOWEmbed(Base):
         self.base_url = base_url
         self.model_name = model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
         batch_size = 16
         ress = []
@@ -697,6 +672,7 @@ class SILICONFLOWEmbed(Base):
             token_count += self.total_token_count(res)
         return np.array(ress), token_count
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text):
         payload = {
             "model": self.model_name,
@@ -716,6 +692,7 @@ class ReplicateEmbed(Base):
         self.model_name = model_name
         self.client = Client(api_token=key)
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
         batch_size = 16
         token_count = sum([num_tokens_from_string(text) for text in texts])
@@ -725,6 +702,7 @@ class ReplicateEmbed(Base):
             ress.extend(res)
         return np.array(ress), token_count
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text):
         res = self.client.embed(self.model_name, input={"texts": [text]})
         return np.array(res), num_tokens_from_string(text)
@@ -762,6 +740,7 @@ class VoyageEmbed(Base):
         self.client = voyageai.Client(api_key=key)
         self.model_name = model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
         batch_size = 16
         ress = []
@@ -774,6 +753,7 @@ class VoyageEmbed(Base):
             token_count += res.total_tokens
         return np.array(ress), token_count
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text):
         res = self.client.embed(
             texts=text, model=self.model_name, input_type="query"
@@ -789,6 +769,7 @@ class HuggingFaceEmbed(Base):
         self.model_name = model_name.split("___")[0]
         self.base_url = base_url or "http://127.0.0.1:8080"
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode(self, texts: list):
         embeddings = []
         for text in texts:
@@ -804,6 +785,7 @@ class HuggingFaceEmbed(Base):
                 raise Exception(f"Error: {response.status_code} - {response.text}")
         return np.array(embeddings), sum([num_tokens_from_string(text) for text in texts])
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def encode_queries(self, text):
         response = requests.post(
             f"{self.base_url}/embed",
@@ -815,6 +797,63 @@ class HuggingFaceEmbed(Base):
             return np.array(embedding[0]), num_tokens_from_string(text)
         else:
             raise Exception(f"Error: {response.status_code} - {response.text}")
+
+
+class CoHereEmbed(Base):
+    def __init__(self, key, model_name, base_url=None):
+        from cohere import Client
+
+        self.client = Client(api_key=key)
+        self.model_name = model_name
+
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
+    def encode(self, texts: list):
+        batch_size = 16
+        ress = []
+        token_count = 0
+        for i in range(0, len(texts), batch_size):
+            res = self.client.embed(
+                texts=texts[i : i + batch_size],
+                model=self.model_name,
+                input_type="search_document",
+                embedding_types=["float"],
+            )
+            ress.extend([d for d in res.embeddings.float])
+            token_count += res.meta.billed_units.input_tokens
+        return np.array(ress), token_count
+
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
+    def encode_queries(self, text):
+        res = self.client.embed(
+            texts=[text],
+            model=self.model_name,
+            input_type="search_query",
+            embedding_types=["float"],
+        )
+        return np.array(res.embeddings.float[0]), int(
+            res.meta.billed_units.input_tokens
+        )
+
+
+class TogetherAIEmbed(OpenAIEmbed):
+    def __init__(self, key, model_name, base_url="https://api.together.xyz/v1"):
+        if not base_url:
+            base_url = "https://api.together.xyz/v1"
+        super().__init__(key, model_name, base_url)
+
+
+class PerfXCloudEmbed(OpenAIEmbed):
+    def __init__(self, key, model_name, base_url="https://cloud.perfxlab.cn/v1"):
+        if not base_url:
+            base_url = "https://cloud.perfxlab.cn/v1"
+        super().__init__(key, model_name, base_url)
+
+
+class UpstageEmbed(OpenAIEmbed):
+    def __init__(self, key, model_name, base_url="https://api.upstage.ai/v1/solar"):
+        if not base_url:
+            base_url = "https://api.upstage.ai/v1/solar"
+        super().__init__(key, model_name, base_url)
 
 
 class VolcEngineEmbed(OpenAIEmbed):
@@ -835,3 +874,23 @@ class GPUStackEmbed(OpenAIEmbed):
         print(key,base_url)
         self.client = OpenAI(api_key=key, base_url=base_url)
         self.model_name = model_name
+
+
+class LmStudioEmbed(LocalAIEmbed):
+    def __init__(self, key, model_name, base_url):
+        if not base_url:
+            raise ValueError("Local llm url cannot be None")
+        if base_url.split("/")[-1] != "v1":
+            base_url = os.path.join(base_url, "v1")
+        self.client = OpenAI(api_key="lm-studio", base_url=base_url)
+        self.model_name = model_name
+
+
+class OpenAI_APIEmbed(OpenAIEmbed):
+    def __init__(self, key, model_name, base_url):
+        if not base_url:
+            raise ValueError("url cannot be None")
+        if base_url.split("/")[-1] != "v1":
+            base_url = os.path.join(base_url, "v1")
+        self.client = OpenAI(api_key=key, base_url=base_url)
+        self.model_name = model_name.split("___")[0]

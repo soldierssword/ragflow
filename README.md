@@ -1,3 +1,80 @@
+# 重要更新说明
+
+## 项目仓库
+
+项目仓库地址：https://github.com/soldierssword/ragflow.git
+
+## 1. API限流无限重试机制
+
+为了提高系统稳定性，我们为以下组件添加了API限流无限重试机制：
+
+- **嵌入模型**：为以下嵌入模型添加了重试装饰器
+  - OpenAIEmbed
+  - ZhipuEmbed
+  - QWenEmbed
+  - OllamaEmbed
+  - BedrockEmbed
+  - NvidiaEmbed
+  - SILICONFLOWEmbed
+  - GeminiEmbed
+  - XinferenceEmbed
+  - YoudaoEmbed
+  - JinaEmbed
+  - DefaultEmbedding
+  - LocalAIEmbed
+  - FastEmbed
+  - ReplicateEmbed
+  - VoyageEmbed
+  - HuggingFaceEmbed
+  - CoHereEmbed
+- **聊天大模型**：添加了重试装饰器
+  - 为Base类的chat和chat_streamly方法添加了重试装饰器
+  - 为以下重写了chat方法的子类添加了重试装饰器：
+    - BaiChuanChat
+    - QWenChat
+    - ZhipuChat
+    - OllamaChat
+    - MiniMaxChat
+    - MistralChat
+    - BedrockChat
+    - GeminiChat
+    - GroqChat
+    - CoHereChat
+    - ReplicateChat
+    - HunyuanChat
+    - BaiduYiyanChat
+    - AnthropicChat
+    - GoogleChat
+
+重试机制特点：
+- 对于速率限制错误（HTTP 429等），设置了无限重试
+- 对于其他类型的错误，最多重试5次
+- 使用指数退避策略，初始延迟1秒，每次重试后延迟时间翻倍
+
+## 2. 使用本地Dockerfile构建镜像
+
+我们修改了Docker配置，从使用预构建镜像改为使用本地Dockerfile构建的镜像：
+
+```bash
+# 在docker/.env文件中，将
+# RAGFLOW_IMAGE=infiniflow/ragflow:v0.17.2-slim
+# 修改为
+RAGFLOW_IMAGE=ragflow:local
+```
+
+使用方法：
+1. 在项目根目录下构建本地镜像：
+   ```bash
+   docker build -t ragflow:local .
+   ```
+2. 使用docker-compose启动服务：
+   ```bash
+   cd docker
+   docker-compose up -d
+   ```
+
+---
+
 <div align="center">
 <a href="https://demo.ragflow.io/">
 <img src="web/src/assets/logo-with-text.png" width="520" alt="ragflow logo">

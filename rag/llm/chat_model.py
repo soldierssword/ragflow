@@ -28,6 +28,7 @@ import os
 import json
 import requests
 import asyncio
+from graphrag.utils import retry_llm_request
 
 LENGTH_NOTIFICATION_CN = "······\n由于大模型的上下文窗口大小限制，回答已经被大模型截断。"
 LENGTH_NOTIFICATION_EN = "...\nThe answer is truncated by your chosen LLM due to its limitation on context length."
@@ -39,6 +40,7 @@ class Base(ABC):
         self.client = OpenAI(api_key=key, base_url=base_url, timeout=timeout)
         self.model_name = model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def chat(self, system, history, gen_conf):
         if system:
             history.insert(0, {"role": "system", "content": system})
@@ -61,6 +63,7 @@ class Base(ABC):
         except openai.APIError as e:
             return "**ERROR**: " + str(e), 0
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def chat_streamly(self, system, history, gen_conf):
         if system:
             history.insert(0, {"role": "system", "content": system})
@@ -104,17 +107,6 @@ class Base(ABC):
             yield ans + "\n**ERROR**: " + str(e)
 
         yield total_tokens
-
-    def total_token_count(self, resp):
-        try:
-            return resp.usage.total_tokens
-        except Exception:
-            pass
-        try:
-            return resp["usage"]["total_tokens"]
-        except Exception:
-            pass
-        return 0
 
 
 class GptTurbo(Base):
@@ -188,6 +180,7 @@ class BaiChuanChat(Base):
             "top_p": params.get("top_p", 0.85),
         }
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def chat(self, system, history, gen_conf):
         if system:
             history.insert(0, {"role": "system", "content": system})
@@ -209,7 +202,7 @@ class BaiChuanChat(Base):
                 **self._format_params(gen_conf))
             ans = response.choices[0].message.content.strip()
             if response.choices[0].finish_reason == "length":
-                if is_chinese([ans]):
+                if is_chinese(ans):
                     ans += LENGTH_NOTIFICATION_CN
                 else:
                     ans += LENGTH_NOTIFICATION_EN
@@ -251,7 +244,7 @@ class BaiChuanChat(Base):
                 else:
                     total_tokens = tol
                 if resp.choices[0].finish_reason == "length":
-                    if is_chinese([ans]):
+                    if is_chinese(ans):
                         ans += LENGTH_NOTIFICATION_CN
                     else:
                         ans += LENGTH_NOTIFICATION_EN
@@ -271,6 +264,7 @@ class QWenChat(Base):
         if self.is_reasoning_model(self.model_name):
             super().__init__(key, model_name, "https://dashscope.aliyuncs.com/compatible-mode/v1")
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def chat(self, system, history, gen_conf):
         if "max_tokens" in gen_conf:
             del gen_conf["max_tokens"]
@@ -367,6 +361,7 @@ class ZhipuChat(Base):
         self.client = ZhipuAI(api_key=key)
         self.model_name = model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def chat(self, system, history, gen_conf):
         if system:
             history.insert(0, {"role": "system", "content": system})
@@ -435,6 +430,7 @@ class OllamaChat(Base):
         self.client = Client(host=kwargs["base_url"])
         self.model_name = model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def chat(self, system, history, gen_conf):
         if system:
             history.insert(0, {"role": "system", "content": system})
@@ -607,6 +603,7 @@ class MiniMaxChat(Base):
         self.model_name = model_name
         self.api_key = key
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def chat(self, system, history, gen_conf):
         if system:
             history.insert(0, {"role": "system", "content": system})
@@ -688,6 +685,7 @@ class MistralChat(Base):
         self.client = MistralClient(api_key=key)
         self.model_name = model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def chat(self, system, history, gen_conf):
         if system:
             history.insert(0, {"role": "system", "content": system})
@@ -756,6 +754,7 @@ class BedrockChat(Base):
             self.client = boto3.client(service_name='bedrock-runtime', region_name=self.bedrock_region,
                                    aws_access_key_id=self.bedrock_ak, aws_secret_access_key=self.bedrock_sk)
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def chat(self, system, history, gen_conf):
         from botocore.exceptions import ClientError
         for k in list(gen_conf.keys()):
@@ -837,6 +836,7 @@ class GeminiChat(Base):
         self.model = GenerativeModel(model_name=self.model_name)
         self.model._client = _client
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def chat(self, system, history, gen_conf):
         from google.generativeai.types import content_types
 
@@ -852,7 +852,8 @@ class GeminiChat(Base):
                 item['role'] = 'user'
             if 'content' in item:
                 item['parts'] = item.pop('content')
-
+        mes = history.pop()["message"]
+        ans = ""
         try:
             response = self.model.generate_content(
                 history,
@@ -875,6 +876,7 @@ class GeminiChat(Base):
                 item['role'] = 'model'
             if 'content' in item:
                 item['parts'] = item.pop('content')
+        mes = history.pop()["message"]
         ans = ""
         try:
             response = self.model.generate_content(
@@ -897,6 +899,7 @@ class GroqChat(Base):
         self.client = Groq(api_key=key)
         self.model_name = model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def chat(self, system, history, gen_conf):
         if system:
             history.insert(0, {"role": "system", "content": system})
@@ -1007,6 +1010,7 @@ class CoHereChat(Base):
         self.client = Client(api_key=key)
         self.model_name = model_name
 
+    @retry_llm_request(max_retries=5, initial_delay=1, backoff_factor=2, rate_limit_retries=float('inf'))
     def chat(self, system, history, gen_conf):
         if system:
             history.insert(0, {"role": "system", "content": system})
@@ -1585,3 +1589,21 @@ class GPUStackChat(Base):
         if base_url.split("/")[-1] != "v1-openai":
             base_url = os.path.join(base_url, "v1-openai")
         super().__init__(key, model_name, base_url)
+
+class Base(ABC):
+    ...
+
+    def total_token_count(self, resp):
+        try:
+            return resp.usage.total_tokens
+        except Exception:
+            pass
+        try:
+            return resp["usage"]["total_tokens"]
+        except Exception:
+            pass
+        try:
+            return resp.get("eval_count", 0) + resp.get("prompt_eval_count", 0)
+        except Exception:
+            pass
+        return 0
